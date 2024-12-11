@@ -1,0 +1,34 @@
+{
+  "name": "@bimangle/cesium-info-accessor",
+  "version": "1.0.1",
+  "description": "A Cesium plugin for automatically loading and displaying component property data from BimAngle-exported 3D Tiles datasets.",
+  "main": "dist/cesium-info-accessor.js",
+  "scripts": {
+    "build": "rollup -c",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "cesium",
+    "3dtiles",
+    "gis"
+  ],
+  "author": "BimAngle",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "cesium": "^1.110.0"
+  },
+  "devDependencies": {
+    "@rollup/plugin-commonjs": "^22.0.2",
+    "@rollup/plugin-node-resolve": "^13.3.0",
+    "rollup": "^2.79.2"
+  },
+  "files": [
+    "dist",
+    "src",
+    "LICENSE",
+    "README.md"
+  ]
+}
