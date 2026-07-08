@@ -1,11 +1,39 @@
 /*!
- * BimAngle 3D Tiles Helper Lib v1.0.1
+ * BimAngle 3D Tiles Helper Lib v2.0.0
  * 
  * Copyright 2018-2025 BimAngle
  * All rights reserved.
  */
 
 "use strict";
+
+// ---------------------------------------------------------------------------
+// i18n — detect browser language once at load time
+// ---------------------------------------------------------------------------
+const _IA_ZH = (function () {
+    if (typeof navigator === 'undefined') return false;
+    const lang = (navigator.language || navigator.userLanguage || '').toLowerCase();
+    return lang.startsWith('zh');
+})();
+
+const _IA_STRINGS = {
+    zh: {
+        loading:  '加载中...',
+        yes:      '是',
+        no:       '否',
+        null_name: '<无名称>',
+    },
+    en: {
+        loading:  'Loading...',
+        yes:      'Yes',
+        no:       'No',
+        null_name: '<null>',
+    },
+};
+
+function _iat(key) {
+    return _IA_ZH ? _IA_STRINGS.zh[key] : _IA_STRINGS.en[key];
+}
 
 function InfoAccessorMixin(viewer, options){
     
@@ -33,9 +61,21 @@ function InfoAccessorMixin(viewer, options){
 
 /**
  * 将属性信息绑定到模型构件
+ *
+ * v2.0 新增公开 API：
+ *   select(tileset, dbId, options?)   — 选中构件（解除 feature 必选依赖）
+ *   clearSelection()                  — 取消选中
+ *   highlight(tileset, dbId)          — 高亮构件（悬停）
+ *   clearHighlight()                  — 清除高亮
+ *   showProps(node)                   — 在信息框渲染属性表格
+ *   getTilesetBasePath(tileset)       — 从 tileset URL 推导基础路径
+ *   selectedDbId  (getter)            — 当前选中的 dbId（-1 表示无）
+ *   selectedTileset (getter)          — 当前选中的 tileset
+ *   highlightedDbId (getter)          — 当前悬停高亮的 dbId
+ *   selectionChanged (Cesium.Event)   — 选中状态变化事件 {tileset, dbId}
  */
 class InfoAccessor {
-    
+
     _tilesets = new WeakMap();
     _tileset = null;
     _picking = true;
@@ -51,21 +91,31 @@ class InfoAccessor {
     _pinchStart = false;
 
     _selectedEntity = new Cesium.Entity();
-    
+
+    // ---------------------------------------------------------------------------
+    // Public read-only state
+    // ---------------------------------------------------------------------------
+    get selectedDbId()    { return this._selectedDbId; }
+    get selectedTileset() { return this._tileset; }
+    get highlightedDbId() { return this._highlightedDbId; }
+
     constructor(viewer, options){
-        
+
         const defaults = {
             autoAttach: true,
             highlightColor: Cesium.Color.YELLOW,
             selectedColor: Cesium.Color.LIME
         };
-        
+
         this._viewer = viewer;
         this._config = Object.assign({}, defaults, options || {});
-        
+
         this.highlightColor = this._config.highlightColor;
         this.selectedColor = this._config.selectedColor;
-        
+
+        // Public event — fires whenever selection changes
+        this.selectionChanged = new Cesium.Event();
+
         this._loadFeatureBind = this._loadFeature.bind(this);
         this._unloadFeatureBind = this._unloadFeature.bind(this);
 
@@ -81,6 +131,152 @@ class InfoAccessor {
 
         this._setupTileset(tileset);
         return true;
+    }
+
+    // ---------------------------------------------------------------------------
+    // Public API — v2.0
+    // ---------------------------------------------------------------------------
+
+    /**
+     * 选中指定构件，可选支持父节点（无直接 feature）场景。
+     * @param {Cesium.Cesium3DTileset} tileset
+     * @param {number} dbId
+     * @param {object} [options]
+     * @param {Cesium.Cesium3DTileFeature} [options.feature]      — 直接 feature（叶节点）
+     * @param {Cesium.Cesium3DTileFeature} [options.repFeature]   — 代表 feature（父节点，仅用于 basePath 推导）
+     * @param {number[]} [options.descendants]                    — 子孙 dbId 列表（用于批量着色）
+     * @param {string}  [options.name]                            — 覆盖信息框标题
+     */
+    select(tileset, dbId, options) {
+        const opts = options || {};
+
+        if (tileset === this._tileset && dbId === this._selectedDbId) return;
+
+        if (this._highlightedDbId >= 0) this._clearHighlighted();
+        this._clearSelected();
+
+        this._tileset      = tileset;
+        this._selectedDbId = dbId;
+
+        if (dbId < 0) {
+            this.selectionChanged.raiseEvent({ tileset: null, dbId: -1 });
+            return;
+        }
+
+        // Ensure tileset is registered
+        if (!this._tilesets.has(tileset)) this._setupTileset(tileset);
+
+        // Show info box with loading placeholder
+        const displayName = opts.name || `${dbId}`;
+        this._selectedEntity.name        = displayName;
+        this._selectedEntity.description = `${_iat('loading')}<div class="cesium-infoBox-loading"></div>`;
+        this._viewer.selectedEntity = this._selectedEntity;
+
+        // Resolve basePath: prefer feature/repFeature → tile recursive; fallback → tileset URL
+        const anchorFeature = opts.feature || opts.repFeature || null;
+        let basePath = this.getTilesetBasePath(tileset);
+        if (anchorFeature) {
+            try {
+                const tilesetUrl = this._getTilesetBaseUrl(anchorFeature.content.tile);
+                const lastSlash  = tilesetUrl.lastIndexOf('/');
+                basePath = lastSlash === -1 ? '.' : tilesetUrl.substring(0, lastSlash);
+            } catch (_) { /* fallback to tileset URL already set */ }
+        }
+
+        // Load properties
+        const propsData = anchorFeature && anchorFeature.getProperty && anchorFeature.getProperty('Props');
+        if (propsData) {
+            this.showProps(propsData);
+        } else {
+            fetch(`${basePath}/info/${Math.floor(parseInt(dbId, 10) / 100)}.json`)
+                .then((r) => {
+                    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                    return r.json();
+                })
+                .then((json) => {
+                    if (this._selectedDbId !== dbId) return;
+                    const node = json.data[dbId + ''];
+                    if (opts.name && node) node.name = opts.name;
+                    this.showProps(node);
+                })
+                .catch((err) => {
+                    if (this._selectedDbId !== dbId) return;
+                    this._selectedEntity.description = String(err);
+                });
+        }
+
+        // Apply selection color to features
+        // Priority: opts.feature > dbIdToFeatures[dbId] (direct) > opts.descendants (batch)
+        const tilesetInfo  = this._tilesets.get(tileset);
+        const d2f          = tilesetInfo ? tilesetInfo.dbIdToFeatures : {};
+        const directFeatures = d2f[dbId];
+
+        const colorTargets = [];
+        if (opts.feature) {
+            colorTargets.push(opts.feature);
+        } else if (directFeatures && directFeatures.length > 0) {
+            colorTargets.push(...directFeatures);
+        } else if (opts.descendants && opts.descendants.length > 0) {
+            for (const did of opts.descendants) {
+                const df = d2f[did];
+                if (df) colorTargets.push(...df);
+            }
+        }
+
+        for (const f of colorTargets) {
+            this._selected.push({
+                feature: f,
+                originalColor: Cesium.Color.clone(f.color)
+            });
+            f.color = Cesium.Color.clone(this.selectedColor, f.color);
+        }
+
+        this.selectionChanged.raiseEvent({ tileset, dbId });
+    }
+
+    /** 取消当前选中 */
+    clearSelection() {
+        const hadSelection = this._selectedDbId >= 0;
+        this._clearSelected();
+        if (hadSelection) {
+            this.selectionChanged.raiseEvent({ tileset: null, dbId: -1 });
+        }
+    }
+
+    /**
+     * 高亮指定构件（悬停效果），支持子孙批量高亮。
+     * @param {Cesium.Cesium3DTileset} tileset
+     * @param {number} dbId
+     * @param {object} [options]
+     * @param {number[]} [options.descendants] — 子孙 dbId 列表
+     */
+    highlight(tileset, dbId, options) {
+        this._setHighlighted(tileset, dbId, options);
+    }
+
+    /** 清除悬停高亮 */
+    clearHighlight() {
+        this._clearHighlighted();
+    }
+
+    /**
+     * 在 Cesium 信息框中渲染属性表格。
+     * @param {object|string} node — 属性数据节点
+     */
+    showProps(node) {
+        this._showProps(node);
+    }
+
+    /**
+     * 从 tileset URL 直接推导基础路径（去掉最后一段 /tileset.json）。
+     * @param {Cesium.Cesium3DTileset} tileset
+     * @returns {string}
+     */
+    getTilesetBasePath(tileset) {
+        const url      = tileset.resource?.url || tileset.url || '';
+        const cleanUrl = url.includes('?') ? url.split('?')[0] : url;
+        const last     = cleanUrl.lastIndexOf('/');
+        return last >= 0 ? cleanUrl.substring(0, last) : '.';
     }
     
     _setupScreenSpaceEventHandler(){
@@ -234,22 +430,36 @@ class InfoAccessor {
         return sphere;
     }
 
-    _setHighlighted(tileset, dbId) {
+    _setHighlighted(tileset, dbId, options) {
 
         if (tileset === this._tileset && dbId === this._highlightedDbId) return;
 
         this._clearHighlighted();
-        this._tileset = tileset;
+        this._tileset        = tileset;
         this._highlightedDbId = dbId;
 
         if (this._highlightedDbId === this._selectedDbId || this._highlightedDbId < 0) {
             return;
         }
 
-        const targetColor = this.highlightColor;
-        const dbIdToFeatures = this._tilesets.get(tileset).dbIdToFeatures;
-        const features = dbIdToFeatures[dbId];
-        for (let feature of features) {
+        const targetColor    = this.highlightColor;
+        const tilesetInfo    = this._tilesets.get(tileset);
+        if (!tilesetInfo) return;
+        const dbIdToFeatures = tilesetInfo.dbIdToFeatures;
+
+        // Collect direct features + optional descendants
+        const colorTargets = [];
+        const direct = dbIdToFeatures[dbId];
+        if (direct && direct.length > 0) {
+            colorTargets.push(...direct);
+        } else if (options && options.descendants) {
+            for (const did of options.descendants) {
+                const df = dbIdToFeatures[did];
+                if (df) colorTargets.push(...df);
+            }
+        }
+
+        for (const feature of colorTargets) {
             this._highlighted.push({
                 feature: feature,
                 originalColor: Cesium.Color.clone(feature.color)
@@ -289,79 +499,8 @@ class InfoAccessor {
     }
 
     _setSelected(tileset, dbId, feature) {
-
-        if (tileset === this._tileset && dbId === this._selectedDbId) return;
-
-        if (this._highlightedDbId >= 0) {
-            this._clearHighlighted();
-        }
-
-        this._clearSelected();
-        this._tileset = tileset;
-        this._selectedDbId = dbId;
-
-        if (this._selectedDbId < 0) {
-            return;
-        }
-
-        // console.log(`Selected dbId: ${dbId}`);
-
-        this._selectedEntity.name = `Load info for node ${dbId}`;
-        this._selectedEntity.description = 'Loading <div class="cesium-infoBox-loading"></div>';
-        
-        // const sphere = this._getFeatureBoundingSphere(feature);
-        // this._selectedEntity.position = sphere.center;
-        // this._selectedEntity.ellipsoid = {
-        //     radii: new Cesium.Cartesian3(sphere.radius, sphere.radius, sphere.radius)
-        // };
-        // this._selectedEntity.boundingSphere = sphere;
-
-        // const heading = Cesium.Math.toRadians(135);
-        // const pitch = 0;
-        // const roll = 0;
-        // const hpr = new Cesium.HeadingPitchRoll(heading, pitch, roll);
-
-        // const hpr = new Cesium.HeadingPitchRange(0, -0.5, 0)
-        // const orientation = Cesium.Transforms.headingPitchRollQuaternion(sphere.center, hpr);
-        // this._selectedEntity.orientation = orientation;
-
-        this._viewer.selectedEntity = this._selectedEntity;
-
-        //var tilesetUrl = tileset.url || tileset.resource.url;
-        const tilesetUrl = this._getTilesetBaseUrl(feature.content.tile);
-        const lastIndex = tilesetUrl.lastIndexOf('/');
-        const basePath = lastIndex === -1 ? "." : tilesetUrl.substr(0, lastIndex);
-
-        const propsData = feature && feature.getProperty("Props");
-        if (propsData) {
-            //加载嵌入的属性数据
-            this._showProps(propsData);
-        } else {
-            //从json中加载属性数据
-            fetch(`${basePath}/info/${parseInt(dbId / 100)}.json`).then(function (response) {
-                return response.json();
-            }).then((json) => {
-                if (this._selectedDbId !== dbId) return;
-
-                const node = json.data[dbId + ''];
-
-                this._showProps(node);
-            }).catch((err) => {
-                if (this._selectedDbId !== dbId) return;
-
-                this._selectedEntity.description = err;
-            });
-        }
-        
-        const dbIdToFeatures = this._tilesets.get(tileset).dbIdToFeatures;
-        const features = dbIdToFeatures[dbId];
-        for (let feature of features) {
-            this._selected.push({
-                feature: feature,
-                originalColor: Cesium.Color.clone(feature.color)
-            });
-            feature.color = Cesium.Color.clone(this.selectedColor, feature.color);
-        }
+        // Backward-compatible shim — delegates to the new public select() API
+        this.select(tileset, dbId, { feature });
     }
 
     _showProps(node){
@@ -369,7 +508,7 @@ class InfoAccessor {
             node = JSON.parse(node);
         }
 
-        this._selectedEntity.name = node.name || "<null>";
+        this._selectedEntity.name = node.name || _iat('null_name');
 
         let strings = [];
         strings.push('<table class="cesium-infoBox-defaultTable"><tbody>');
@@ -389,7 +528,7 @@ class InfoAccessor {
                 let value = props.values[i];
                 switch (props.types[i]) {
                 case 'boolean':
-                    value = value ? 'Yes' : 'No';
+                    value = value ? _iat('yes') : _iat('no');
                     break;
                 case 'double':
                     value = props.units[i] ? `${value.toFixed(3)} ${props.units[i]}` : `${value.toFixed(3)}`;
@@ -430,7 +569,7 @@ class InfoAccessor {
         }
 
         this._selectedDbId = -1;
-        
+
         if(this._viewer.selectedEntity === this._selectedEntity){
             this._viewer.selectedEntity = null;
         }
@@ -441,14 +580,19 @@ class InfoAccessor {
 
         const dbIdToFeatures = this._tilesets.get(feature.tileset).dbIdToFeatures;
         const features = dbIdToFeatures[dbId];
-        features.splice(features.findIndex(item => item.feature === feature), 1);
+        if (features) {
+            const idx = features.indexOf(feature);
+            if (idx > -1) features.splice(idx, 1);
+        }
 
         if (dbId === this._selectedDbId) {
-            this._selected.splice(this._selected.findIndex(item => item.feature === feature), 1);
+            const si = this._selected.findIndex(item => item.feature === feature);
+            if (si > -1) this._selected.splice(si, 1);
         }
 
         if (dbId === this._highlightedDbId) {
-            this._highlighted.splice(this._highlighted.findIndex(item => item.feature === feature), 1);
+            const hi = this._highlighted.findIndex(item => item.feature === feature);
+            if (hi > -1) this._highlighted.splice(hi, 1);
         }
     }
 

@@ -1,6 +1,6 @@
 {
   "name": "@bimangle/cesium-info-accessor",
-  "version": "1.0.1",
+  "version": "2.0.0",
   "description": "A Cesium plugin for automatically loading and displaying component property data from BimAngle-exported 3D Tiles datasets.",
   "main": "dist/cesium-info-accessor.js",
   "scripts": {
