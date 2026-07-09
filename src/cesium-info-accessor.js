@@ -1,5 +1,5 @@
 /*!
- * BimAngle 3D Tiles Helper Lib v2.0.0
+ * BimAngle 3D Tiles Helper Lib v2.0.1
  * 
  * Copyright 2018-2025 BimAngle
  * All rights reserved.
@@ -206,16 +206,16 @@ class InfoAccessor {
         }
 
         // Apply selection color to features
-        // Priority: opts.feature > dbIdToFeatures[dbId] (direct) > opts.descendants (batch)
+        // Priority: dbIdToFeatures[dbId] (all geometries for this component) > opts.feature (fallback) > opts.descendants (batch)
         const tilesetInfo  = this._tilesets.get(tileset);
         const d2f          = tilesetInfo ? tilesetInfo.dbIdToFeatures : {};
         const directFeatures = d2f[dbId];
 
         const colorTargets = [];
-        if (opts.feature) {
-            colorTargets.push(opts.feature);
-        } else if (directFeatures && directFeatures.length > 0) {
+        if (directFeatures && directFeatures.length > 0) {
             colorTargets.push(...directFeatures);
+        } else if (opts.feature) {
+            colorTargets.push(opts.feature);
         } else if (opts.descendants && opts.descendants.length > 0) {
             for (const did of opts.descendants) {
                 const df = d2f[did];

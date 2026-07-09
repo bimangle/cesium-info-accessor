@@ -116,9 +116,9 @@ viewer.infoAccessor.select(tileset, dbId, {
 
 | Option | Type | Description |
 |--------|------|-------------|
-| `feature` | `Cesium3DTileFeature` | The direct feature to color (leaf node) |
+| `feature` | `Cesium3DTileFeature` | Anchor feature used for base-path and embedded-property derivation; coloring always applies to all registered features for `dbId` |
 | `repFeature` | `Cesium3DTileFeature` | A representative descendant feature used only for property path derivation (group node) |
-| `descendants` | `number[]` | List of descendant `dbId`s for batch color application when there is no direct feature |
+| `descendants` | `number[]` | List of descendant `dbId`s for batch color application when there are no direct features registered for `dbId` |
 | `name` | `string` | Override the info box title |
 
 ---
@@ -238,6 +238,9 @@ viewer.extend(SceneTreeMixin,    { showInfoNodes: false });
 ---
 
 ## Changelog
+
+### v2.0.1
+- Fixed a bug where clicking any geometry of a multi-geometry component only selected that single geometry instead of all geometries belonging to the same component. Selection coloring now applies to all registered features for the clicked `dbId`, consistent with hover-highlight behavior.
 
 ### v2.0.0
 - **New public API**: `select()`, `clearSelection()`, `highlight()`, `clearHighlight()`, `showProps()`, `getTilesetBasePath()`
